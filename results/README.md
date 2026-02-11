@@ -1,0 +1,1 @@
+Please find the relevant folders inside [the project folder](https://kaust.sharepoint.com/:f:/r/sites/M365_Deepwave_Documents/Shared%20Documents/Restricted%20Area/REPORTS/DW0106?csf=1&web=1&e=S4UArO) and extract the relevant models/data inside each folder accordingly.

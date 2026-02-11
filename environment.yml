@@ -1,0 +1,34 @@
+name: guidedfwi
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python==3.11
+  - pip
+  - numpy
+  - matplotlib
+  - tqdm
+  - imageio
+  - pandas
+  - seaborn
+  - tslearn
+  - ipython
+  - jupyter
+  - pytest
+  - h5py
+  - gstools
+  - scikit-image
+  - scikit-learn
+  - mpi4py
+  - pip:
+    - scipy==1.12
+    - dask[dataframe]
+    - dask[distributed]
+    - tensorboard
+    - pyvista[all]
+    - tslearn
+    - pyproximal
+    - segyio
+    - pylops
+    - pylops-mpi
+    - timm

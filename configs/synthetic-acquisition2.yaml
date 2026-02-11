@@ -1,0 +1,8 @@
+parameters:
+  nt: 2000
+  dt: 0.004
+  dx: 25
+  dz: 6.25
+  freq: 4
+  total_sources: 64
+  selected_sources: 16

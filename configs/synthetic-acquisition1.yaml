@@ -1,0 +1,23 @@
+parameters:
+  nx: 512
+  dx: 0.016
+  ox: 0
+  nz: 256
+  dz: 0.01
+  oz: 0
+  ns: 32
+  ds: 0.256
+  os: 0
+  sz: 0.01
+  nr: 256
+  dr: 0.032
+  or: 0
+  rz: 0.01
+  nt: 1000
+  dt: 0.004
+  ot: 0
+  freq: '15'
+  niter: 150
+  lr: '5e-2'
+  sigma: 3
+  acquisition: 'node'
