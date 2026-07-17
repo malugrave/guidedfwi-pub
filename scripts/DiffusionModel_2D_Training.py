@@ -43,6 +43,7 @@ sys.path.append('../src/')
 
 from guidedfwi.diffusion2d import Trainer
 from guidedfwi.utils import log_experiment
+from guidedfwi.openfwi import build_training_velocity_tensor, TRAIN_FILES
         
 def main():
     
@@ -77,6 +78,12 @@ def main():
     "--unet_objective",
     type=str,
     default='pred_v',
+    )
+    parser.add_argument(
+    "--openfwi_root",
+    type=str,
+    default='../data/FlatVel_A',
+    help="Root folder of the OpenFWI FlatVel-A dataset (contains 'model/' and 'data/'). Only used when --training_data=flatvel_a.",
     )
 
     ##################################################################
@@ -155,7 +162,32 @@ def main():
         vp_random = np.load('../data/random_layers_vp_1ksamples_in_meters.npy', mmap_mode="r")
         vs_random = vp_random / np.sqrt(3)
         rho_random = 0.31 * np.power(vp_random * 1e3, 0.25)
-        
+
+    if args.training_data == 'flatvel_a':
+        # OpenFWI FlatVel-A replaces the proprietary SEG/in-house volumes used by
+        # the 'seg' branch above. Only the 55 training files (model1..model55)
+        # are read here -- the 5 held-out test files and the seismic gathers
+        # (data*.npy) are never touched during prior training.
+        vp_flatvel_native = build_training_velocity_tensor(args.openfwi_root, TRAIN_FILES).numpy()
+        n_flatvel = vp_flatvel_native.shape[0]
+
+        # Native FlatVel-A resolution is 70x70. The Unet/GaussianDiffusion below
+        # operate at a fixed 256x256 resolution (so that the resulting prior
+        # stays loadable by DiffusionModel_2D_FWIGuidedSamplingSynthetic.py),
+        # so we resize exactly like the existing 'openfwi' branch above already
+        # does for its own (also non-256-native) source volumes.
+        vp_flatvel = resize(
+            vp_flatvel_native.reshape(n_flatvel, 70, 70), (n_flatvel, 256, 256),
+            order=1, preserve_range=True, anti_aliasing=True
+        ).reshape(n_flatvel, 1, 256, 256)
+
+        # FlatVel-A ships vp only (already in m/s, ~1500-4500). vs/rho are
+        # derived the same way DiffusionModel_2D_FWIGuidedSamplingSynthetic.py
+        # already derives them for other vp-only velocity types (Gardner's
+        # relation, no unit conversion needed since vp is already in m/s).
+        vs_flatvel = vp_flatvel / np.sqrt(2)
+        rho_flatvel = 0.31 * vp_flatvel ** 0.25
+
     # Combine data
     if args.training_data == 'seg':
         vp = vp_seg
@@ -169,6 +201,10 @@ def main():
         vp = vp_random
         vs = vs_random
         rho = rho_random
+    elif args.training_data == 'flatvel_a':
+        vp = vp_flatvel
+        vs = vs_flatvel
+        rho = rho_flatvel
     elif args.training_data == 'combined':
         vp = np.concatenate((vp_seg, vp_openfwi, vp_random), axis=0)
         vs = np.concatenate((vs_seg, vs_openfwi, vs_random), axis=0)
@@ -185,10 +221,13 @@ def main():
     training_images = (training_images - min_vals) / (max_vals - min_vals + 1e-8)
     
     if args.input_dim == 128:
-        training_images = torch.Tensor(training_images[:, :, ::2, ::2]).float()
+        training_images = training_images[:, :, ::2, ::2]
 
-    # # Convert to torch tensor
-    # training_images = torch.Tensor(training_images)[::6].float()#.cuda()
+    # Convert to torch tensor (Trainer wraps this in a TensorDataset, which
+    # requires an actual torch.Tensor; previously this conversion only
+    # happened for the input_dim==128 branch, leaving a plain numpy array
+    # otherwise -- fixed here since it applies regardless of --training_data).
+    training_images = torch.from_numpy(training_images).float()
 
     trainer = Trainer(
         diffusion,

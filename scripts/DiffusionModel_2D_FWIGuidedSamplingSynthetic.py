@@ -42,6 +42,7 @@ sys.path.append('../src/')
 from guidedfwi.diffusion2d import Trainer
 from guidedfwi.plots import plot_modulus, plot_diffusion_evolution, plot_flipped_data
 from guidedfwi.utils import log_experiment, normalize_to_minusone_and_one, denormalize_from_minusone_and_one
+from guidedfwi.openfwi import load_test_sample
 
 # Comment out if LateX is not present
 plt.style.use('../asset/plots.mplstyle')
@@ -603,7 +604,49 @@ def main():
     type=int,
     default=5,
     )
-    
+    parser.add_argument(
+    "--openfwi_root",
+    type=str,
+    default='../data/FlatVel_A',
+    help="Root folder of the OpenFWI FlatVel-A dataset (contains 'model/' and 'data/'). Only used when --velocity_type=flatvel_a.",
+    )
+    parser.add_argument(
+    "--test_file",
+    type=int,
+    default=56,
+    help="OpenFWI FlatVel-A file number used for inference (must be one of 56-60, the held-out test files).",
+    )
+    parser.add_argument(
+    "--test_sample",
+    type=int,
+    default=0,
+    help="Sample index (0-499) inside --test_file used for inference.",
+    )
+    parser.add_argument(
+    "--openfwi_dx",
+    type=float,
+    default=10.0,
+    help="Lateral grid spacing (m) of the OpenFWI FlatVel-A models (70 px over a 700 m domain by default).",
+    )
+    parser.add_argument(
+    "--openfwi_dz",
+    type=float,
+    default=10.0,
+    help="Depth grid spacing (m) of the OpenFWI FlatVel-A models.",
+    )
+    parser.add_argument(
+    "--diffusion_results_folder",
+    type=str,
+    default=None,
+    help="Folder holding the diffusion prior checkpoint trained on FlatVel-A (required when --training_data=flatvel_a).",
+    )
+    parser.add_argument(
+    "--diffusion_checkpoint",
+    type=int,
+    default=None,
+    help="Checkpoint milestone to load from --diffusion_results_folder (required when --training_data=flatvel_a).",
+    )
+
     ##################################################################
     # Experiment logging
     ##################################################################
@@ -645,6 +688,26 @@ def main():
     # Convert to torch tensor
     training_images = torch.randn((100,3,256,256)).float()#.cuda()
 
+    # Resolve which pretrained diffusion prior to load. 'seg' and the other
+    # (non-flatvel_a) original option keep their original hardcoded
+    # results folder/checkpoint. 'flatvel_a' points at whatever run the user
+    # produced with `DiffusionModel_2D_Training.py --training_data flatvel_a`,
+    # whose folder name/checkpoint number are not known ahead of time.
+    if args.training_data == 'flatvel_a':
+        assert args.diffusion_results_folder is not None and args.diffusion_checkpoint is not None, (
+            "--diffusion_results_folder and --diffusion_checkpoint must be provided "
+            "when --training_data=flatvel_a (point them at your own "
+            "DiffusionModel_2D_Training.py --training_data flatvel_a run)."
+        )
+        diffusion_results_folder = args.diffusion_results_folder
+        diffusion_checkpoint = args.diffusion_checkpoint
+    elif args.training_data == 'seg':
+        diffusion_results_folder = '../results/DiffusionModel_2D_Training_20250623-092200'
+        diffusion_checkpoint = 52
+    else:
+        diffusion_results_folder = '../results/DiffusionModel_2D_Training_20250723-005200'
+        diffusion_checkpoint = 32
+
     trainer = Trainer(
         diffusion,
         training_images,
@@ -652,7 +715,7 @@ def main():
         train_lr = 2e-6, # 1e-5
         save_and_sample_every = 1000,
         num_samples = 16,
-        results_folder = '../results/DiffusionModel_2D_Training_20250623-092200' if args.training_data=='seg' else '../results/DiffusionModel_2D_Training_20250723-005200',
+        results_folder = diffusion_results_folder,
         train_num_steps = 700000,         # total training steps
         gradient_accumulate_every = 16,   # gradient accumulation steps
         ema_decay = 0.995,                # exponential moving average decay
@@ -661,11 +724,8 @@ def main():
     )
 
     # Load model
-    if args.training_data=='seg':
-        trainer.load(52)
-    else: 
-        trainer.load(32)
-    
+    trainer.load(diffusion_checkpoint)
+
     # Parameters
     resize_model = False if args.resize_model == 'n' else True# Set False to keep original size
     nz, nx = 256, 256       # Model input size if resizing is enabled
@@ -690,9 +750,33 @@ def main():
         vp_raw = np.fromfile('../data/velocities/salt', np.float32).reshape(676, 676, 210)[:, 330, :]
         dx, dz = 20, 20
 
+    elif args.velocity_type == 'flatvel_a':
+        # Replaces the proprietary SEAM/SEG/BP binaries above with a single
+        # held-out OpenFWI FlatVel-A test sample (files 56-60, never mixed
+        # with the 1-55 training range). v_true below plays exactly the same
+        # role vp_raw already plays for the other (vp-only) velocity types.
+        openfwi_sample = load_test_sample(args.openfwi_root, args.test_file, args.test_sample)
+        vp_raw = openfwi_sample["velocity"].numpy()[0]  # (1, 70, 70) -> (70, 70)
+        dx, dz = args.openfwi_dx, args.openfwi_dz
+
+        # The real recorded gather (d_obs) is kept only for reference/QC: the
+        # FWI guidance loop below stays a self-consistent synthetic experiment
+        # (it forward-models its own "observed" data from vp_true with
+        # Deepwave, exactly like every other velocity_type here). OpenFWI's
+        # precomputed data{n}.npy uses a different, undocumented acquisition
+        # (5 individual shots, 1000 time samples, unknown dt/wavelet/source
+        # positions) that is inconsistent with the Deepwave acquisition
+        # hardcoded a few lines below (nt=2000, dt=0.004s, --frequency Hz
+        # Ricker, --num_sources/--selected_sources simultaneous shots).
+        # Wiring data_obs directly into the gradient computation would
+        # require rebuilding that acquisition geometry to match OpenFWI's,
+        # which is a separate, unverified physics assumption -- so it is not
+        # done implicitly here.
+        openfwi_d_obs_reference = openfwi_sample["seismic"].numpy()  # (5, 1000, 70), for reference only
+
     else:
         raise ValueError(f"Unknown velocity type: {args.velocity_type}")
-    
+
     if args.velocity_type != 'seam_arid':
         vs_raw = vp_raw/np.sqrt(2)
         rho_raw = 0.31 * vp_raw ** 0.25
@@ -717,6 +801,11 @@ def main():
     vp_init = torch.from_numpy(gaussian_filter(vp_true_np, args.sigma)).float().to(device).T
     vs_init = torch.from_numpy(gaussian_filter(vs_true_np, args.sigma)).float().to(device).T
     rho_init = torch.from_numpy(gaussian_filter(rho_true_np, args.sigma)).float().to(device).T
+
+    if args.velocity_type == 'flatvel_a':
+        # Kept only as a reference artifact -- see the note above on why it is
+        # not fed into the FWI guidance loop.
+        np.save(os.path.join(results_folder, 'openfwi_d_obs_reference.npy'), openfwi_d_obs_reference)
 
     x_sharp = torch.cat((vp_true.unsqueeze(0).unsqueeze(0), vs_true.unsqueeze(0).unsqueeze(0), rho_true.unsqueeze(0).unsqueeze(0)), 1).detach().cpu().numpy()
     x_smooth = torch.cat((vp_init.unsqueeze(0).unsqueeze(0), vs_init.unsqueeze(0).unsqueeze(0), rho_init.unsqueeze(0).unsqueeze(0)), 1).detach().cpu().numpy()
