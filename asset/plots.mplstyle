@@ -53,6 +53,7 @@ savefig.transparent : True
 font.family : serif
 mathtext.fontset : dejavuserif
 
-# Use LaTeX for math formatting
-text.usetex : True
+# Use LaTeX for math formatting (requires a `latex` binary on PATH; falls
+# back to matplotlib's built-in mathtext renderer when disabled)
+text.usetex : False
 text.latex.preamble : \usepackage{amsmath} \usepackage{amssymb}
