@@ -605,6 +605,12 @@ def main():
     default=5,
     )
     parser.add_argument(
+    "--input_dim",
+    type=int,
+    default=256,
+    help="Working resolution of the diffusion Unet (must match --input_dim used in DiffusionModel_2D_Training.py for the loaded checkpoint).",
+    )
+    parser.add_argument(
     "--openfwi_root",
     type=str,
     default='../data/FlatVel_A',
@@ -681,12 +687,12 @@ def main():
 
     diffusion = GaussianDiffusion(
         model,
-        image_size = 256,
+        image_size = args.input_dim,
         timesteps = 1000
     ).cuda()
 
     # Convert to torch tensor
-    training_images = torch.randn((100,3,256,256)).float()#.cuda()
+    training_images = torch.randn((100,3,args.input_dim,args.input_dim)).float()#.cuda()
 
     # Resolve which pretrained diffusion prior to load. 'seg' and the other
     # (non-flatvel_a) original option keep their original hardcoded
@@ -852,7 +858,7 @@ def main():
             run_fwi_under=args.run_fwi_under,
             window_size=(args.window_size, args.window_size),
             stride=(args.stride, args.stride),
-            model_input_size=(256, 256),
+            model_input_size=(args.input_dim, args.input_dim),
             vmin=vp_true.min(), vmax=vp_true.max(),
             dx=dx, dz=dz, freq=args.frequency,
             vp_true=vp_true,
