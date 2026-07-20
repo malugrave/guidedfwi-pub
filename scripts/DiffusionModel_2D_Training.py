@@ -89,7 +89,13 @@ def main():
     "--train_num_steps",
     type=int,
     default=700000,
-    help="Total optimizer steps to train for. Checkpoints/sample grids are still written every save_and_sample_every (5000) steps regardless of this total, so you can stop early and load any milestone.",
+    help="Total optimizer steps to train for. Checkpoints/sample grids are still written every save_and_sample_every steps regardless of this total, so you can stop early and load any milestone.",
+    )
+    parser.add_argument(
+    "--save_and_sample_every",
+    type=int,
+    default=5000,
+    help="Checkpoint/sample-grid interval in steps. Lower this (e.g. 5, with a small --train_num_steps) for a quick smoke test that exercises the periodic-sampling code path without waiting for a real checkpoint interval.",
     )
 
     ##################################################################
@@ -246,7 +252,7 @@ def main():
         training_images,
         train_batch_size = 4,
         train_lr = 2e-6, # 1e-5
-        save_and_sample_every = 5000,
+        save_and_sample_every = args.save_and_sample_every,
         num_samples = 16,
         save_best_and_latest_only = False,
         results_folder=results_folder if args.results_folder is None else args.results_folder,
