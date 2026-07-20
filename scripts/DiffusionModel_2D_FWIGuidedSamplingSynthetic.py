@@ -410,7 +410,8 @@ def p_sample_loop_with_fwi_guidance(
                 # x_out, _ = diffusion.p_sample(upscaled, t, self_cond)
                 
                 # Custom p_sample()
-                preds = diffusion.model_predictions(x_patch.to(torch.float32), torch.full((shape[0],), t, dtype = torch.long).cuda(), self_cond)
+                with trainer.accelerator.autocast():
+                    preds = diffusion.model_predictions(x_patch.to(torch.float32), torch.full((shape[0],), t, dtype = torch.long).cuda(), self_cond)
                 x_start = preds.pred_x_start
                 x_start.clamp_(-1., 1.) # This is true in the original p_mean_variance()
                 model_mean, _, model_log_variance = diffusion.q_posterior(x_start = x_start, x_t = x_patch.to(torch.float32), t = torch.full((shape[0],), t, dtype = torch.long).cuda())
@@ -682,7 +683,7 @@ def main():
     model = Unet(
         dim = 256,
         dim_mults = (1, 2, 4, 8, 16),
-        flash_attn = False
+        flash_attn = True
     )
 
     diffusion = GaussianDiffusion(
