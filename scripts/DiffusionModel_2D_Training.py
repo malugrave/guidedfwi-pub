@@ -115,7 +115,7 @@ def main():
     model = Unet(
         dim = args.unet_dim,
         dim_mults = (1, 2, 4, 8, 16),
-        flash_attn = False
+        flash_attn = True
     )
 
     diffusion = GaussianDiffusion(
