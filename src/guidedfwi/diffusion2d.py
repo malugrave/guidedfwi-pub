@@ -442,7 +442,7 @@ class Trainer:
                     if self.step != 0 and divisible_by(self.step, self.save_and_sample_every):
                         self.ema.ema_model.eval()
 
-                        with torch.inference_mode():
+                        with torch.inference_mode(), self.accelerator.autocast():
                             milestone = self.step // self.save_and_sample_every
                             batches = num_to_groups(self.num_samples, self.batch_size)
                             all_images_list = list(map(lambda n: self.ema.ema_model.sample(batch_size=n), batches))

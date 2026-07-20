@@ -270,8 +270,9 @@ def main():
     
     trainer.train()
 
-    sampled_images = diffusion.sample(batch_size = 4)
-    sampled_images.shape # (4, 3, 128, 128)
+    with trainer.accelerator.autocast():
+        sampled_images = diffusion.sample(batch_size = 4)
+    sampled_images.shape # (4, 3, args.input_dim, args.input_dim)
     
 if __name__ == "__main__":
     main()
