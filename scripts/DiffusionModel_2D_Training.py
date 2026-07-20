@@ -245,6 +245,10 @@ def main():
         calculate_fid = False              # whether to calculate fid during training
     )
 
+    print("Accelerator device:", trainer.accelerator.device)
+    print("CUDA available:", torch.cuda.is_available())
+    print("CUDA devices:", torch.cuda.device_count())
+
     if args.load_model is not None:
         trainer.load(args.load_model)
         
