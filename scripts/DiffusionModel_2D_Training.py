@@ -232,14 +232,14 @@ def main():
     trainer = Trainer(
         diffusion,
         training_images,
-        train_batch_size = 16,
+        train_batch_size = 4,
         train_lr = 2e-6, # 1e-5
         save_and_sample_every = 5000,
         num_samples = 16,
         save_best_and_latest_only = False,
         results_folder=results_folder if args.results_folder is None else args.results_folder,
         train_num_steps = 700000,         # total training steps
-        gradient_accumulate_every = 1,    # gradient accumulation steps
+        gradient_accumulate_every = 4,    # gradient accumulation steps
         ema_decay = 0.995,                # exponential moving average decay
         amp = True,                       # turn on mixed precision
         calculate_fid = False              # whether to calculate fid during training
