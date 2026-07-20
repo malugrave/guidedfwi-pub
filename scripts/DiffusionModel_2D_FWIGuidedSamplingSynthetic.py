@@ -763,7 +763,12 @@ def main():
         # with the 1-55 training range). v_true below plays exactly the same
         # role vp_raw already plays for the other (vp-only) velocity types.
         openfwi_sample = load_test_sample(args.openfwi_root, args.test_file, args.test_sample)
-        vp_raw = openfwi_sample["velocity"].numpy()[0]  # (1, 70, 70) -> (70, 70)
+        # OpenFWI ships (depth, x); pre-transpose to (x, depth) here because
+        # the shared pipeline below always applies its own .T when building
+        # vp_true/vs_true/rho_true (needed for the SEG/SEAM binaries above,
+        # which are natively (x, depth)) -- without this, the two .T's would
+        # leave FlatVel-A rotated 90 degrees relative to the other branches.
+        vp_raw = openfwi_sample["velocity"].numpy()[0].T  # (1, 70, 70) -> (70, 70), pre-transposed
         dx, dz = args.openfwi_dx, args.openfwi_dz
 
         # The real recorded gather (d_obs) is kept only for reference/QC: the
