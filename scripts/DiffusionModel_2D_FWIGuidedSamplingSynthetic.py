@@ -534,11 +534,18 @@ def main():
     type=int,
     nargs='+',        # Accepts one or more integers
     default=[10, 10], # Default list if not provided
-    )    
+    )
     parser.add_argument(
     "--velocity_type",
     type=str,
     default='seam_arid',
+    )
+    parser.add_argument(
+    "--initial_model_type",
+    type=str,
+    default='smooth',
+    choices=['smooth', 'constant'],
+    help="'smooth' (default): Gaussian-filter the true model with --sigma. 'constant': flat model at the mean of each true channel (vp/vs/rho), ignoring --sigma.",
     )
     parser.add_argument(
     "--resize_model",
@@ -810,9 +817,18 @@ def main():
     vs_true = torch.from_numpy(vs_true_np).float().to(device).T
     rho_true = torch.from_numpy(rho_true_np).float().to(device).T
     
-    vp_init = torch.from_numpy(gaussian_filter(vp_true_np, args.sigma)).float().to(device).T
-    vs_init = torch.from_numpy(gaussian_filter(vs_true_np, args.sigma)).float().to(device).T
-    rho_init = torch.from_numpy(gaussian_filter(rho_true_np, args.sigma)).float().to(device).T
+    if args.initial_model_type == 'constant':
+        # Flat starting model at the mean of each true channel -- a much
+        # less informative initial guess than the Gaussian-smoothed true
+        # model, useful to test how much the guidance/prior can recover on
+        # their own.
+        vp_init = torch.full_like(vp_true, vp_true.mean().item())
+        vs_init = torch.full_like(vs_true, vs_true.mean().item())
+        rho_init = torch.full_like(rho_true, rho_true.mean().item())
+    else:
+        vp_init = torch.from_numpy(gaussian_filter(vp_true_np, args.sigma)).float().to(device).T
+        vs_init = torch.from_numpy(gaussian_filter(vs_true_np, args.sigma)).float().to(device).T
+        rho_init = torch.from_numpy(gaussian_filter(rho_true_np, args.sigma)).float().to(device).T
 
     if args.velocity_type == 'flatvel_a':
         # Kept only as a reference artifact -- see the note above on why it is
