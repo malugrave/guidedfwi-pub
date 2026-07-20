@@ -115,7 +115,7 @@ def main():
     model = Unet(
         dim = args.unet_dim,
         dim_mults = (1, 2, 4, 8, 16),
-        flash_attn = True
+        flash_attn = False
     )
 
     diffusion = GaussianDiffusion(
@@ -241,7 +241,7 @@ def main():
         train_num_steps = 700000,         # total training steps
         gradient_accumulate_every = 16,   # gradient accumulation steps
         ema_decay = 0.995,                # exponential moving average decay
-        amp = False,                      # turn on mixed precision
+        amp = True,                       # turn on mixed precision
         calculate_fid = False              # whether to calculate fid during training
     )
 

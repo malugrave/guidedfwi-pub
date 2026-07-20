@@ -301,7 +301,7 @@ class Trainer:
         
         assert len(self.ds) >= 100, 'you should have at least 100 images in your folder. at least 10k images recommended'
 
-        dl = torch.utils.data.DataLoader(self.ds, batch_size = train_batch_size, shuffle = True, pin_memory = True, num_workers = cpu_count())
+        dl = torch.utils.data.DataLoader(self.ds, batch_size = train_batch_size, shuffle = True, pin_memory = True, num_workers = 2)
 
         dl = self.accelerator.prepare(dl)
         self.dl = cycle(dl)

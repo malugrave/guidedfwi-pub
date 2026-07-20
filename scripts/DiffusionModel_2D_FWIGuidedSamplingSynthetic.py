@@ -676,7 +676,7 @@ def main():
     model = Unet(
         dim = 256,
         dim_mults = (1, 2, 4, 8, 16),
-        flash_attn = True
+        flash_attn = False
     )
 
     diffusion = GaussianDiffusion(
