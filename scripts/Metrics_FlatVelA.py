@@ -138,9 +138,12 @@ def main():
     ##################################################################
 
     openfwi_sample = load_test_sample(run_args["openfwi_root"], run_args["test_file"], run_args["test_sample"])
-    # Same pre-transpose as DiffusionModel_2D_FWIGuidedSamplingSynthetic.py's
-    # flatvel_a branch, to match OpenFWI's native (depth, x) orientation.
-    v_true = openfwi_sample["velocity"].numpy()[0].T
+    # DiffusionModel_2D_FWIGuidedSamplingSynthetic.py's flatvel_a branch
+    # pre-transposes vp_raw, but the shared pipeline downstream applies its
+    # own .T when building the vp_true *tensor* -- the two cancel out, so
+    # the actual vp_true used by the network (and saved into samples.npy)
+    # is the OpenFWI array with no net transform. Do NOT transpose here.
+    v_true = openfwi_sample["velocity"].numpy()[0]
 
     sigma = run_args.get("sigma", [10, 10])
     v_init = gaussian_filter(v_true, sigma)
