@@ -177,15 +177,18 @@ def main():
         vp_flatvel_native = build_training_velocity_tensor(args.openfwi_root, TRAIN_FILES).numpy()
         n_flatvel = vp_flatvel_native.shape[0]
 
-        # Native FlatVel-A resolution is 70x70. The Unet/GaussianDiffusion below
-        # operate at a fixed 256x256 resolution (so that the resulting prior
-        # stays loadable by DiffusionModel_2D_FWIGuidedSamplingSynthetic.py),
-        # so we resize exactly like the existing 'openfwi' branch above already
-        # does for its own (also non-256-native) source volumes.
+        # Native FlatVel-A resolution is 70x70, which the Unet below can't
+        # consume directly (dim_mults=(1,2,4,8,16) needs an input divisible
+        # by 2**4=16). Resize to --input_dim (must itself be divisible by
+        # 16; 80 is the closest valid size to 70) the same way the existing
+        # 'openfwi' branch above already does for its own non-256-native
+        # source volumes. --input_dim must match on the sampling side too
+        # (DiffusionModel_2D_FWIGuidedSamplingSynthetic.py --input_dim).
+        assert args.input_dim % 16 == 0, "--input_dim must be divisible by 16 for dim_mults=(1,2,4,8,16)"
         vp_flatvel = resize(
-            vp_flatvel_native.reshape(n_flatvel, 70, 70), (n_flatvel, 256, 256),
+            vp_flatvel_native.reshape(n_flatvel, 70, 70), (n_flatvel, args.input_dim, args.input_dim),
             order=1, preserve_range=True, anti_aliasing=True
-        ).reshape(n_flatvel, 1, 256, 256)
+        ).reshape(n_flatvel, 1, args.input_dim, args.input_dim)
 
         # FlatVel-A ships vp only (already in m/s, ~1500-4500). vs/rho are
         # derived the same way DiffusionModel_2D_FWIGuidedSamplingSynthetic.py
@@ -226,7 +229,10 @@ def main():
     # Normalize each channel independently for each sample
     training_images = (training_images - min_vals) / (max_vals - min_vals + 1e-8)
     
-    if args.input_dim == 128:
+    if args.input_dim == 128 and args.training_data != 'flatvel_a':
+        # The other branches (seg/openfwi/random/combined) are natively
+        # 256x256, so this is how they reach 128. flatvel_a already resized
+        # straight to --input_dim above, so this would halve it again.
         training_images = training_images[:, :, ::2, ::2]
 
     # Convert to torch tensor (Trainer wraps this in a TensorDataset, which
