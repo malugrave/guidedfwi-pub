@@ -327,6 +327,12 @@ class Trainer:
 
         self.model, self.opt = self.accelerator.prepare(self.model, self.opt)
 
+        print("Accelerator device:", self.accelerator.device)
+        print("Model device:", next(self.model.parameters()).device)
+        if torch.cuda.is_available():
+            print("CUDA allocated:", torch.cuda.memory_allocated() / 1024**2, "MiB")
+            print("CUDA reserved:", torch.cuda.memory_reserved() / 1024**2, "MiB")
+
         # FID-score computation
 
         self.calculate_fid = calculate_fid and self.accelerator.is_main_process
