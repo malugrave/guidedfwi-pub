@@ -85,6 +85,12 @@ def main():
     default='../data/FlatVel_A',
     help="Root folder of the OpenFWI FlatVel-A dataset (contains 'model/' and 'data/'). Only used when --training_data=flatvel_a.",
     )
+    parser.add_argument(
+    "--train_num_steps",
+    type=int,
+    default=700000,
+    help="Total optimizer steps to train for. Checkpoints/sample grids are still written every save_and_sample_every (5000) steps regardless of this total, so you can stop early and load any milestone.",
+    )
 
     ##################################################################
     # Experiment logging
@@ -238,7 +244,7 @@ def main():
         num_samples = 16,
         save_best_and_latest_only = False,
         results_folder=results_folder if args.results_folder is None else args.results_folder,
-        train_num_steps = 700000,         # total training steps
+        train_num_steps = args.train_num_steps,  # total training steps
         gradient_accumulate_every = 4,    # gradient accumulation steps
         ema_decay = 0.995,                # exponential moving average decay
         amp = True,                       # turn on mixed precision
