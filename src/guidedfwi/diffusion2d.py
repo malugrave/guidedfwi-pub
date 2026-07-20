@@ -424,7 +424,8 @@ class Trainer:
 
                     self.accelerator.backward(loss)
 
-                pbar.set_description(f'loss: {total_loss:.4f}')
+                gpu_util = torch.cuda.utilization(device) if torch.cuda.is_available() else -1
+                pbar.set_description(f'loss: {total_loss:.4f} | gpu: {gpu_util}%')
 
                 accelerator.wait_for_everyone()
                 accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
