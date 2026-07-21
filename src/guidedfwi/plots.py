@@ -614,11 +614,88 @@ def plot_modulus(m, fig_name=None,
         for i in range(len(logs)):
             plt.plot(logs[i][0], logs[i][1], logs[i][2], linewidth=logs_thickness)
         
-    if fig_name is not None: 
+    if fig_name is not None:
         plt.savefig(fig_name)
-    
+
     plt.show()
-    
+
+def plot_stagewise_diffusion(stage_data, vmin, vmax, outpath, n_show=6, channel=0, cmap='rainbow'):
+    """
+    Grid of n_show diffusion stages, one row per stage, showing (left to
+    right): the noisy state entering the step, the network's denoised (x0)
+    estimate, the DDPM ancestral-sampling output (which already re-injects
+    the posterior noise for the next, less noisy timestep), and the state
+    after FWI guidance for that step (identical to the DDPM output on steps
+    where guidance did not fire).
+
+    Parameters
+    ----------
+    stage_data : dict
+        As returned by p_sample_loop_with_fwi_guidance(..., save_stage_plots=True)
+        (its last returned element), with keys 't', 'x_before', 'x0_hat',
+        'x_ddpm_step', 'x_after' -- each a list of (1, C, H, W) tensors, one
+        entry per saved diffusion timestep.
+    vmin, vmax : float
+        Color scale limits (physical units), shared across all panels.
+    outpath : str
+        Output file path.
+    n_show : int
+        Number of stages (rows) to display, evenly spaced across the saved steps.
+    channel : int
+        Which channel to plot (0=vp, 1=vs, 2=rho).
+    cmap : str
+        Colormap for the velocity panels.
+    """
+    from matplotlib.gridspec import GridSpec
+
+    n_saved = len(stage_data["t"])
+    if n_saved < 1:
+        raise ValueError("No saved stages available.")
+
+    n_show = int(min(max(n_show, 1), n_saved))
+    idxs = np.unique(np.linspace(0, n_saved - 1, n_show).round().astype(int))
+
+    ncols = 4
+    nrows = len(idxs)
+
+    fig = plt.figure(figsize=(5.0 * ncols + 0.8, 4.0 * nrows))
+    gs = GridSpec(
+        nrows, ncols + 1, figure=fig,
+        width_ratios=[1, 1, 1, 1, 0.055], wspace=0.12, hspace=0.25,
+    )
+    cax = fig.add_subplot(gs[:, -1])
+    im = None
+
+    for row, idx in enumerate(idxs):
+        t_current = stage_data["t"][idx]
+        fields = [
+            stage_data["x_before"][idx].numpy()[0, channel],
+            stage_data["x0_hat"][idx].numpy()[0, channel],
+            stage_data["x_ddpm_step"][idx].numpy()[0, channel],
+            stage_data["x_after"][idx].numpy()[0, channel],
+        ]
+        titles = [
+            f"x_t (noisy input)\nt={t_current}",
+            "denoised estimate\n(x0_hat)",
+            "DDPM step\n(re-noised for t-1)",
+            "after FWI guidance",
+        ]
+
+        for col, (field, title) in enumerate(zip(fields, titles)):
+            ax = fig.add_subplot(gs[row, col])
+            im = ax.imshow(field, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto')
+            ax.set_title(title, fontsize=12, pad=8)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            if col == 0:
+                ax.set_ylabel(f"stage {idx}", fontsize=11, labelpad=12)
+
+    cbar = fig.colorbar(im, cax=cax)
+    cbar.set_label("velocity", fontsize=12)
+    fig.suptitle(f"Diffusion + FWI guidance stagewise evolution: {len(idxs)} stages", fontsize=16, y=0.995)
+    fig.savefig(outpath, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
 def plot_modulus_animated(arrays, gif_name='output.gif', recs=None, sous=None, logs=None, logs_thickness=10, **kwargs):
     """
     Generate a GIF from a list of 2D numpy arrays.

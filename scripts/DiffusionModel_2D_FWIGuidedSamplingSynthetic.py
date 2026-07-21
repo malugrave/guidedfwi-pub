@@ -40,7 +40,7 @@ import sys
 sys.path.append('../src/')
 
 from guidedfwi.diffusion2d import Trainer
-from guidedfwi.plots import plot_modulus, plot_diffusion_evolution, plot_flipped_data
+from guidedfwi.plots import plot_modulus, plot_diffusion_evolution, plot_flipped_data, plot_stagewise_diffusion
 from guidedfwi.utils import log_experiment, normalize_to_minusone_and_one, denormalize_from_minusone_and_one
 from guidedfwi.openfwi import load_test_sample
 
@@ -305,7 +305,8 @@ def p_sample_loop_with_fwi_guidance(
     normalize_patch=False,
     vp_true=None,
     total_sources=64,
-    selected_sources=16
+    selected_sources=16,
+    save_stage_plots=False,
 ):
     """
     Sampling loop that combines reverse diffusion with FWI gradient updates.
@@ -342,6 +343,11 @@ def p_sample_loop_with_fwi_guidance(
         Frequency for PML and wavelet.
     window_size, stride, model_input_size : tuple
         Patch extraction, overlap, and model input shape.
+    save_stage_plots : bool
+        If True, also record and return (as a 3rd tuple element) a dict with
+        keys 't', 'x_before', 'x0_hat', 'x_ddpm_step', 'x_after' -- one entry
+        per diffusion timestep -- for use with
+        guidedfwi.plots.plot_stagewise_diffusion.
 
     Returns
     --------
@@ -349,6 +355,8 @@ def p_sample_loop_with_fwi_guidance(
         Final or all generated images.
     fwi_loss : list
         List of FWI loss values (if applicable).
+    stage_data : dict or None
+        Per-timestep stage snapshots if save_stage_plots=True, else None.
     """
     
     freq =  freq # Hz
@@ -369,6 +377,10 @@ def p_sample_loop_with_fwi_guidance(
     x_start = None
 
     fwi_loss = []
+
+    stage_data = None
+    if save_stage_plots:
+        stage_data = {"t": [], "x_before": [], "x0_hat": [], "x_ddpm_step": [], "x_after": []}
 
     vp_param = None                    # torch.nn.Parameter holding velocity in physical units
     optimizer = None                   # persistent Adam tracking momentum across levels
@@ -395,9 +407,11 @@ def p_sample_loop_with_fwi_guidance(
         noise_patches, _, _, _ = extract_squares_with_gaussian_weights(torch.randn(shape).to(torch.float64).cuda(), window_size, stride)
         B, N, C, dx1, dx2 = patches.shape
         patch_outputs = []
+        x0_patch_outputs = [] if save_stage_plots else None
 
         for b in range(B):
             sample_patches = []
+            x0_patches = [] if save_stage_plots else None
             for n in range(N):
                 x_patch = patches[b, n:n+1]
                 noise_patch = noise_patches[b, n:n+1]
@@ -424,17 +438,35 @@ def p_sample_loop_with_fwi_guidance(
                 
                 downscaled = torch.nn.functional.interpolate(x_out, size=(dx1, dx2), mode='bilinear', align_corners=False)
                 sample_patches.append(downscaled)
-                
+
+                if save_stage_plots:
+                    x0_downscaled = torch.nn.functional.interpolate(x_start, size=(dx1, dx2), mode='bilinear', align_corners=False)
+                    x0_patches.append(x0_downscaled)
+
             patch_outputs.append(torch.cat(sample_patches, dim=0).unsqueeze(0))
+            if save_stage_plots:
+                x0_patch_outputs.append(torch.cat(x0_patches, dim=0).unsqueeze(0))
 
         patches = torch.cat(patch_outputs, dim=0)  # (B, N, C, dx, dy)
-        
+
         if normalize_patch:
             patches = denormalize_patches(patches.to(torch.float64), min_patch_vals, max_patch_vals)
-        
+
         # img = combine_squares_with_gaussian_weights(patches.to(torch.float64), shape[-2:], stride, grid_shape)
-        
+
         img = combine_squares_with_gaussian_weights(patches.to(torch.float64), weights.to(vp_true.device).to(torch.float64), shape[-2:], stride, grid_shape)
+
+        if save_stage_plots:
+            x0_patches_all = torch.cat(x0_patch_outputs, dim=0)
+            if normalize_patch:
+                x0_patches_all = denormalize_patches(x0_patches_all.to(torch.float64), min_patch_vals, max_patch_vals)
+            x0_hat_img = combine_squares_with_gaussian_weights(
+                x0_patches_all.to(torch.float64), weights.to(vp_true.device).to(torch.float64), shape[-2:], stride, grid_shape
+            )
+            stage_data["t"].append(i)
+            stage_data["x_before"].append(denormalize_from_minusone_and_one(input_img.to(device), vmin, vmax).detach().cpu())
+            stage_data["x0_hat"].append(denormalize_from_minusone_and_one(x0_hat_img, vmin, vmax).detach().cpu())
+            stage_data["x_ddpm_step"].append(denormalize_from_minusone_and_one(img, vmin, vmax).detach().cpu())
 
         if debug:
             plot_modulus((img.detach().cpu().numpy()-input_img.numpy())[0,0], aspect='auto', cmap='terrain', vmin=-1e-15, vmax=1e-15)
@@ -520,10 +552,15 @@ def p_sample_loop_with_fwi_guidance(
                     vp_param.clamp_(vmin, vmax)                     # project back to bounds
 
                 img = normalize_to_minusone_and_one(vp_param.detach().clone().unsqueeze(0).unsqueeze(0).repeat(1, 3, 1, 1), vmin, vmax)
-                
+
+        if save_stage_plots:
+            # Equals x_ddpm_step on steps where guidance didn't fire this iteration.
+            stage_data["x_after"].append(denormalize_from_minusone_and_one(img, vmin, vmax).detach().cpu())
+
         imgs.append(denormalize_from_minusone_and_one(img, vmin, vmax))
 
-    return (torch.stack(imgs, dim=1), fwi_loss) if return_all_timesteps else (imgs[-1], fwi_loss)
+    result = (torch.stack(imgs, dim=1), fwi_loss) if return_all_timesteps else (imgs[-1], fwi_loss)
+    return result + (stage_data,)
 
 def main():
     
@@ -659,6 +696,18 @@ def main():
     type=int,
     default=None,
     help="Checkpoint milestone to load from --diffusion_results_folder (required when --training_data=flatvel_a).",
+    )
+    parser.add_argument(
+    "--save_stage_plots",
+    type=str,
+    default='n',
+    help="If 'y', save a stagewise_diffusion.pdf grid (noisy input / denoised x0 / DDPM step / after FWI guidance) for the last generated sample.",
+    )
+    parser.add_argument(
+    "--n_stage_plots",
+    type=int,
+    default=6,
+    help="Number of diffusion timesteps (rows) to show in stagewise_diffusion.pdf, evenly spaced across the run.",
     )
 
     ##################################################################
@@ -863,10 +912,11 @@ def main():
     ##################################################################
     
     samples, losses = [], []
-    
+    last_stage_data = None
+
     for _ in range(args.num_samples):
-        
-        sample, loss = p_sample_loop_with_fwi_guidance(
+
+        sample, loss, stage_data = p_sample_loop_with_fwi_guidance(
             trainer=trainer,
             shape=x_smooth.shape,
             return_all_timesteps=False,
@@ -886,11 +936,21 @@ def main():
             vp_true=vp_true,
             normalize_patch=True,
             total_sources=args.num_sources,
-            selected_sources=args.selected_sources
+            selected_sources=args.selected_sources,
+            save_stage_plots=(args.save_stage_plots == 'y'),
         )
-        
+
         samples.append(sample)
         losses.append(loss)
+        last_stage_data = stage_data
+
+    if args.save_stage_plots == 'y' and last_stage_data is not None:
+        plot_stagewise_diffusion(
+            last_stage_data,
+            vmin=vp_true.min().item(), vmax=vp_true.max().item(),
+            outpath=results_folder + '/stagewise_diffusion.pdf',
+            n_show=args.n_stage_plots,
+        )
 
     plot_modulus(
         sample[0, 0].detach().cpu().numpy()/1e3, 
