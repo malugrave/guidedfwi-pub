@@ -380,14 +380,14 @@ def p_sample_loop_with_fwi_guidance(
 
     stage_data = None
     if save_stage_plots:
-        stage_data = {"t": [], "x_before": [], "x0_hat": [], "x_ddpm_step": [], "x_after": []}
+        stage_data = {"t": [], "x_before": [], "x0_hat": [], "x_after_correction": [], "x_after": []}
 
     vp_param = None                    # torch.nn.Parameter holding velocity in physical units
     optimizer = None                   # persistent Adam tracking momentum across levels
     fwi_lr = 50.0                      # keep your previous learning rate
     max_grad = None                    # set e.g. 1e3 to clip, or leave as None
     nz, nx = shape[2:]
-    
+
     for i in tqdm(reversed(range(0, diffusion.num_timesteps - t_start)), desc='sampling loop time step', total=diffusion.num_timesteps - t_start):
         t = torch.tensor(i, device=device)
         if clip_input:
@@ -397,91 +397,65 @@ def p_sample_loop_with_fwi_guidance(
 
         # Patch-based diffusion with interpolation to model_input_size
         input_img = img.detach().cpu().clone()
-        # patches, padded_shape, grid_shape = extract_squares_with_gaussian_weights(img.to(torch.float64), window_size, stride)
-        
-        patches, weights, padded_shape, grid_shape = extract_squares_with_gaussian_weights(img.clone().detach().to(torch.float64).reshape(shape), window_size, stride)   
-        
-        if normalize_patch:     
+        x_t_full = img.clone()  # kept for the single, full-image re-noise step below
+
+        patches, weights, padded_shape, grid_shape = extract_squares_with_gaussian_weights(img.clone().detach().to(torch.float64).reshape(shape), window_size, stride)
+
+        if normalize_patch:
             patches, min_patch_vals, max_patch_vals = normalize_patches_individually(patches.to(torch.float64))
-        
-        noise_patches, _, _, _ = extract_squares_with_gaussian_weights(torch.randn(shape).to(torch.float64).cuda(), window_size, stride)
+
         B, N, C, dx1, dx2 = patches.shape
-        patch_outputs = []
-        x0_patch_outputs = [] if save_stage_plots else None
+        x0_patch_outputs = []
 
         for b in range(B):
-            sample_patches = []
-            x0_patches = [] if save_stage_plots else None
+            x0_patches = []
             for n in range(N):
                 x_patch = patches[b, n:n+1]
-                noise_patch = noise_patches[b, n:n+1]
-                
-                if model_input_size != window_size: 
-                    x_patch = torch.nn.functional.interpolate(x_patch, size=model_input_size, mode='bilinear', align_corners=False)
-                    noise_patch = torch.nn.functional.interpolate(noise_patch, size=model_input_size, mode='bilinear', align_corners=False)
 
-                # # Built-in p_sample()
-                # x_out, _ = diffusion.p_sample(upscaled, t, self_cond)
-                
-                # Custom p_sample()
+                if model_input_size != window_size:
+                    x_patch = torch.nn.functional.interpolate(x_patch, size=model_input_size, mode='bilinear', align_corners=False)
+
+                # Predict the clean (x0) estimate only -- re-noising now happens
+                # once, on the full image, *after* the FWI/Langevin correction below.
                 with trainer.accelerator.autocast():
                     preds = diffusion.model_predictions(x_patch.to(torch.float32), torch.full((shape[0],), t, dtype = torch.long).cuda(), self_cond)
                 x_start = preds.pred_x_start
                 x_start.clamp_(-1., 1.) # This is true in the original p_mean_variance()
-                model_mean, _, model_log_variance = diffusion.q_posterior(x_start = x_start, x_t = x_patch.to(torch.float32), t = torch.full((shape[0],), t, dtype = torch.long).cuda())
 
-                # model_mean, _, model_log_variance, x_start = diffusion.p_mean_variance(upscaled.to(torch.float32), torch.full((shape[0],), t, dtype = torch.long).cuda(), self_cond) # Built-in p_mean_variance()
-                noise = noise_patch if t > 0 else 0. # no noise if t == 0
-                x_out = model_mean + (0.5 * model_log_variance).exp() * noise
-                
-                # x_out = upscaled # Debugging the patching/re-patching process
-                
-                downscaled = torch.nn.functional.interpolate(x_out, size=(dx1, dx2), mode='bilinear', align_corners=False)
-                sample_patches.append(downscaled)
+                downscaled = torch.nn.functional.interpolate(x_start, size=(dx1, dx2), mode='bilinear', align_corners=False)
+                x0_patches.append(downscaled)
 
-                if save_stage_plots:
-                    x0_downscaled = torch.nn.functional.interpolate(x_start, size=(dx1, dx2), mode='bilinear', align_corners=False)
-                    x0_patches.append(x0_downscaled)
+            x0_patch_outputs.append(torch.cat(x0_patches, dim=0).unsqueeze(0))
 
-            patch_outputs.append(torch.cat(sample_patches, dim=0).unsqueeze(0))
-            if save_stage_plots:
-                x0_patch_outputs.append(torch.cat(x0_patches, dim=0).unsqueeze(0))
-
-        patches = torch.cat(patch_outputs, dim=0)  # (B, N, C, dx, dy)
+        x0_patches_all = torch.cat(x0_patch_outputs, dim=0)  # (B, N, C, dx, dy)
 
         if normalize_patch:
-            patches = denormalize_patches(patches.to(torch.float64), min_patch_vals, max_patch_vals)
+            x0_patches_all = denormalize_patches(x0_patches_all.to(torch.float64), min_patch_vals, max_patch_vals)
 
-        # img = combine_squares_with_gaussian_weights(patches.to(torch.float64), shape[-2:], stride, grid_shape)
-
-        img = combine_squares_with_gaussian_weights(patches.to(torch.float64), weights.to(vp_true.device).to(torch.float64), shape[-2:], stride, grid_shape)
+        # Stitched clean (x0) estimate for the whole image -- the FWI/Langevin
+        # correction below acts on this, *before* any noise is reintroduced,
+        # matching the paper's decoupled-annealing order (Table 1): refine
+        # x0_hat, then draw x_{t-1} ~ q(x_{t-1} | x0_hat_refined).
+        x0_hat_img = combine_squares_with_gaussian_weights(
+            x0_patches_all.to(torch.float64), weights.to(vp_true.device).to(torch.float64), shape[-2:], stride, grid_shape
+        ).to(torch.float32)
 
         if save_stage_plots:
-            x0_patches_all = torch.cat(x0_patch_outputs, dim=0)
-            if normalize_patch:
-                x0_patches_all = denormalize_patches(x0_patches_all.to(torch.float64), min_patch_vals, max_patch_vals)
-            x0_hat_img = combine_squares_with_gaussian_weights(
-                x0_patches_all.to(torch.float64), weights.to(vp_true.device).to(torch.float64), shape[-2:], stride, grid_shape
-            )
             stage_data["t"].append(i)
             stage_data["x_before"].append(denormalize_from_minusone_and_one(input_img.to(device), vmin, vmax).detach().cpu())
             stage_data["x0_hat"].append(denormalize_from_minusone_and_one(x0_hat_img, vmin, vmax).detach().cpu())
-            stage_data["x_ddpm_step"].append(denormalize_from_minusone_and_one(img, vmin, vmax).detach().cpu())
 
         if debug:
-            plot_modulus((img.detach().cpu().numpy()-input_img.numpy())[0,0], aspect='auto', cmap='terrain', vmin=-1e-15, vmax=1e-15)
-        
-        # FWI guidance on full image
+            plot_modulus((x0_hat_img.detach().cpu().numpy()-input_img.numpy())[0,0], aspect='auto', cmap='terrain', vmin=-1e-15, vmax=1e-15)
+
+        # FWI/Langevin correction on the clean x0 estimate, *before* re-noising.
+        x0_hat_refined = x0_hat_img
+
         if use_fwi_guidance and (i % inject_every == 0) and (i < run_fwi_under):
-                
-            x0 = img.detach().clone()
-            # vp = denormalize_from_minusone_and_one(x0[0, 0], vmin, vmax).clone().detach().cuda().float().requires_grad_(True)
 
             vp_current = denormalize_from_minusone_and_one(
-                x0[0, 0], vmin, vmax
+                x0_hat_img[0, 0], vmin, vmax
             ).detach().to(device=device, dtype=torch.float32)
-
-            # optimizer = torch.optim.Adam([{'params': [vp], 'lr': 10}])
 
             # (NEW) initialize persistent Parameter + optimizer once; then only copy values
             if vp_param is None:
@@ -491,55 +465,27 @@ def p_sample_loop_with_fwi_guidance(
                 with torch.no_grad():
                     vp_param.copy_(vp_current)
 
-            # for epoch in range(fwi_loop):
-                
-            #     optimizer.zero_grad()
-
-            #     # Bounds projection and smoothing
-            #     vp.data[vp.data < vmin] = vmin
-            #     vp.data[vp.data > vmax] = vmax 
-                
-            #     running_loss = 0
-                
-            #     # Ensures the source locations are consistent when doing random sampling for both observed and synthetic data
-            #     seed = torch.randint(0, 1234567, (1,)).item()
-                
-            #     # Simultaneous-source
-            #     syn_data = forward_propagator(vp, multi_source=True, freq=freq, seed=seed, nt=nt, dt=dt, dz=dz, dx=dx, total_sources=total_sources)
-            #     obs_data = forward_propagator(vp_true, multi_source=True, freq=freq, seed=seed, nt=nt, dt=dt, dz=dz, dx=dx, total_sources=total_sources) + 1e1 * torch.randn_like(syn_data)
-            #     loss = torch.nn.functional.mse_loss(obs_data, syn_data)
-            #     loss.backward(retain_graph=True)
-            #     running_loss = loss.item()
-                
-            #     fwi_loss.append(running_loss)
-                
-            #     if (loss.isnan().sum()>0):
-            #         print('Discovered NaNs in the data.')
-                    
-            #     optimizer.step() 
-            
             for epoch in range(fwi_loop):
                 optimizer.zero_grad(set_to_none=True)
                 with torch.no_grad():
                     vp_param.clamp_(vmin, vmax)                     # keep bounds before sim
-                    
+
                 x_src = dx
                 sampled_idx = np.random.choice(total_sources, size=total_sources, replace=False)
                 y_src = torch.linspace(0, (nx - 1) * dx, total_sources)[sampled_idx]
-                    
+
                 for sou in range(0, total_sources, selected_sources):
 
                     source_locations = torch.zeros(1, selected_sources, 2)
                     source_locations[0, :, 0] = dx
                     source_locations[0, :, 1] = y_src[sou:sou+selected_sources]
-                    
+
                     source_locations[:, :, 0] /= dz  # z-direction (usually 0 index)
                     source_locations[:, :, 1] /= dx  # x-direction (usually 1 index)
 
-                    # your existing forward_propagator calls, but use 'vp_param'
                     syn_data = forward_propagator(vp_param, multi_source=True, freq=freq, nt=nt, dt=dt, dz=dz, dx=dx, total_sources=total_sources, source_locations=source_locations, selected_sources=selected_sources)
                     obs_data = forward_propagator(vp_true, multi_source=True, freq=freq, nt=nt, dt=dt, dz=dz, dx=dx, total_sources=total_sources, source_locations=source_locations, selected_sources=selected_sources) + 1e1 * torch.randn_like(syn_data)
-                    
+
                     # (TIP: cache or precompute obs_data; do not re-noise it inside this loop)
                     loss = torch.nn.functional.mse_loss(obs_data, syn_data)
                     loss.backward()
@@ -551,10 +497,22 @@ def p_sample_loop_with_fwi_guidance(
                 with torch.no_grad():
                     vp_param.clamp_(vmin, vmax)                     # project back to bounds
 
-                img = normalize_to_minusone_and_one(vp_param.detach().clone().unsqueeze(0).unsqueeze(0).repeat(1, 3, 1, 1), vmin, vmax)
+            x0_hat_refined = normalize_to_minusone_and_one(vp_param.detach().clone().unsqueeze(0).unsqueeze(0).repeat(1, 3, 1, 1), vmin, vmax)
 
         if save_stage_plots:
-            # Equals x_ddpm_step on steps where guidance didn't fire this iteration.
+            stage_data["x_after_correction"].append(denormalize_from_minusone_and_one(x0_hat_refined, vmin, vmax).detach().cpu())
+
+        # Re-noise: x_{t-1} ~ q(x_{t-1} | x_t, x0_hat_refined), on the full
+        # image in one shot (this is pure algebra, not a network call, so it
+        # doesn't need to go through patches).
+        t_full = torch.full((shape[0],), t, dtype = torch.long).cuda()
+        model_mean, _, model_log_variance = diffusion.q_posterior(
+            x_start=x0_hat_refined.to(torch.float32), x_t=x_t_full.to(torch.float32), t=t_full
+        )
+        noise = torch.randn(shape, device=device) if t > 0 else 0. # no noise if t == 0
+        img = model_mean + (0.5 * model_log_variance).exp() * noise
+
+        if save_stage_plots:
             stage_data["x_after"].append(denormalize_from_minusone_and_one(img, vmin, vmax).detach().cpu())
 
         imgs.append(denormalize_from_minusone_and_one(img, vmin, vmax))

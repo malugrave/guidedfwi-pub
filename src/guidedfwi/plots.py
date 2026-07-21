@@ -622,19 +622,19 @@ def plot_modulus(m, fig_name=None,
 def plot_stagewise_diffusion(stage_data, vmin, vmax, outpath, n_show=6, channel=0, cmap='rainbow'):
     """
     Grid of n_show diffusion stages, one row per stage, showing (left to
-    right): the noisy state entering the step, the network's denoised (x0)
-    estimate, the DDPM ancestral-sampling output (which already re-injects
-    the posterior noise for the next, less noisy timestep), and the state
-    after FWI guidance for that step (identical to the DDPM output on steps
-    where guidance did not fire).
+    right, in the order they actually happen): the noisy state entering the
+    step, the network's denoised (x0) estimate, that estimate after the
+    FWI/Langevin correction (identical to the previous column on steps where
+    guidance did not fire), and the final re-noised state x_{t-1} ~
+    q(x_{t-1} | x_t, x0_hat_refined) that becomes the next step's input.
 
     Parameters
     ----------
     stage_data : dict
         As returned by p_sample_loop_with_fwi_guidance(..., save_stage_plots=True)
         (its last returned element), with keys 't', 'x_before', 'x0_hat',
-        'x_ddpm_step', 'x_after' -- each a list of (1, C, H, W) tensors, one
-        entry per saved diffusion timestep.
+        'x_after_correction', 'x_after' -- each a list of (1, C, H, W)
+        tensors, one entry per saved diffusion timestep.
     vmin, vmax : float
         Color scale limits (physical units), shared across all panels.
     outpath : str
@@ -671,14 +671,14 @@ def plot_stagewise_diffusion(stage_data, vmin, vmax, outpath, n_show=6, channel=
         fields = [
             stage_data["x_before"][idx].numpy()[0, channel],
             stage_data["x0_hat"][idx].numpy()[0, channel],
-            stage_data["x_ddpm_step"][idx].numpy()[0, channel],
+            stage_data["x_after_correction"][idx].numpy()[0, channel],
             stage_data["x_after"][idx].numpy()[0, channel],
         ]
         titles = [
             f"x_t (noisy input)\nt={t_current}",
             "denoised estimate\n(x0_hat)",
-            "DDPM step\n(re-noised for t-1)",
-            "after FWI guidance",
+            "after FWI/Langevin\ncorrection",
+            "re-noised x_{t-1}\n(next step's input)",
         ]
 
         for col, (field, title) in enumerate(zip(fields, titles)):
